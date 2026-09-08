@@ -345,6 +345,36 @@ class ExerciseProgress {
   });
 }
 
+class CustomExercise {
+  final String id;
+  final String name;
+  final String category;
+  final int defaultSets;
+
+  CustomExercise({
+    required this.id,
+    required this.name,
+    required this.category,
+    this.defaultSets = 3,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'category': category,
+    'defaultSets': defaultSets,
+  };
+
+  factory CustomExercise.fromJson(Map<String, dynamic> json) {
+    return CustomExercise(
+      id: json['id'] as String? ?? '',
+      name: json['name'] as String? ?? '',
+      category: json['category'] as String? ?? 'Pectoraux',
+      defaultSets: (json['defaultSets'] as num?)?.toInt() ?? 3,
+    );
+  }
+}
+
 // ============================================================
 // PROGRAMMES
 // ============================================================
@@ -525,12 +555,17 @@ class AppState extends ChangeNotifier {
   static const String weightHistoryKey =
       'weight_history_v3';
 
+  static const String customExercisesKey =
+      'custom_exercises_v1';
+
   final List<WorkoutRecord> history;
   final List<WeightEntry> weights;
+  final List<CustomExercise> customExercises;
 
   AppState({
     required this.history,
     required this.weights,
+    required this.customExercises,
   });
 
   static Future<AppState> load() async {
@@ -543,8 +578,12 @@ class AppState extends ChangeNotifier {
     final weightString =
         prefs.getString(weightHistoryKey);
 
+    final customExercisesString =
+        prefs.getString(customExercisesKey);
+
     List<WorkoutRecord> history = [];
     List<WeightEntry> weights = [];
+    List<CustomExercise> customExercises = [];
 
     if (workoutString != null &&
         workoutString.isNotEmpty) {
@@ -588,6 +627,24 @@ class AppState extends ChangeNotifier {
       }
     }
 
+    if (customExercisesString != null &&
+        customExercisesString.isNotEmpty) {
+      try {
+        final data = jsonDecode(customExercisesString) as List<dynamic>;
+        customExercises = data
+            .map((item) => CustomExercise.fromJson(
+                  Map<String, dynamic>.from(item as Map),
+                ))
+            .toList();
+      } catch (_) {
+        customExercises = [];
+      }
+    }
+
+    customExercises.sort(
+      (a, b) => a.category.compareTo(b.category),
+    );
+
     history.sort(
       (a, b) => b.date.compareTo(a.date),
     );
@@ -599,6 +656,7 @@ class AppState extends ChangeNotifier {
     return AppState(
       history: history,
       weights: weights,
+      customExercises: customExercises,
     );
   }
 
@@ -690,6 +748,7 @@ class AppState extends ChangeNotifier {
   Future<void> clearAllData() async {
     history.clear();
     weights.clear();
+    customExercises.clear();
 
     final prefs =
         await SharedPreferences.getInstance();
@@ -700,6 +759,10 @@ class AppState extends ChangeNotifier {
 
     await prefs.remove(
       weightHistoryKey,
+    );
+
+    await prefs.remove(
+      customExercisesKey,
     );
 
     notifyListeners();
@@ -729,6 +792,92 @@ class AppState extends ChangeNotifier {
         weights
             .map((item) => item.toJson())
             .toList(),
+      ),
+    );
+  }
+
+  List<Workout> workoutsWithCustomExercises() {
+    final workouts = defaultWorkouts();
+
+    final targets = <String, String>{
+      'Pectoraux': 'Pectoraux / Triceps',
+      'Dos': 'Dos / Biceps',
+      'Épaules': 'Épaules / Haut du corps',
+      'Biceps': 'Dos / Biceps',
+      'Triceps': 'Pectoraux / Triceps',
+      'Jambes': 'Jambes / Abdos',
+      'Abdominaux': 'Jambes / Abdos',
+    };
+
+    for (final custom in customExercises) {
+      final targetName = targets[custom.category];
+      if (targetName == null) continue;
+
+      final workout = workouts.firstWhere(
+        (item) => item.name == targetName,
+      );
+
+      if (!workout.exercises.any(
+        (exercise) =>
+            exercise.name.toLowerCase() ==
+            custom.name.toLowerCase(),
+      )) {
+        workout.exercises.add(
+          Exercise(
+            name: custom.name,
+            muscle: custom.category,
+            defaultSets: custom.defaultSets,
+          ),
+        );
+      }
+    }
+
+    return workouts;
+  }
+
+  Future<void> addCustomExercise({
+    required String name,
+    required String category,
+    required int defaultSets,
+  }) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return;
+
+    if (customExercises.any(
+      (exercise) =>
+          exercise.category == category &&
+          exercise.name.toLowerCase() == trimmed.toLowerCase(),
+    )) {
+      return;
+    }
+
+    customExercises.add(
+      CustomExercise(
+        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        name: trimmed,
+        category: category,
+        defaultSets: defaultSets,
+      ),
+    );
+
+    await saveCustomExercises();
+    notifyListeners();
+  }
+
+  Future<void> deleteCustomExercise(String id) async {
+    customExercises.removeWhere(
+      (exercise) => exercise.id == id,
+    );
+    await saveCustomExercises();
+    notifyListeners();
+  }
+
+  Future<void> saveCustomExercises() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      customExercisesKey,
+      jsonEncode(
+        customExercises.map((item) => item.toJson()).toList(),
       ),
     );
   }
@@ -1234,6 +1383,333 @@ class HomePage extends StatelessWidget {
 }
 
 // ============================================================
+// BIBLIOTHEQUE DES EXERCICES
+// ============================================================
+
+const List<String> exerciseCategories = [
+  'Pectoraux',
+  'Dos',
+  'Épaules',
+  'Biceps',
+  'Triceps',
+  'Jambes',
+  'Abdominaux',
+];
+
+IconData exerciseCategoryIcon(String category) {
+  switch (category) {
+    case 'Pectoraux':
+      return Icons.accessibility_new;
+    case 'Dos':
+      return Icons.accessibility;
+    case 'Épaules':
+      return Icons.fitness_center;
+    case 'Biceps':
+      return Icons.sports_mma;
+    case 'Triceps':
+      return Icons.sports_handball;
+    case 'Jambes':
+      return Icons.directions_run;
+    case 'Abdominaux':
+      return Icons.self_improvement;
+    default:
+      return Icons.fitness_center;
+  }
+}
+
+class ExerciseLibraryPage extends StatefulWidget {
+  final AppState state;
+
+  const ExerciseLibraryPage({
+    super.key,
+    required this.state,
+  });
+
+  @override
+  State<ExerciseLibraryPage> createState() =>
+      _ExerciseLibraryPageState();
+}
+
+class _ExerciseLibraryPageState
+    extends State<ExerciseLibraryPage> {
+  @override
+  void initState() {
+    super.initState();
+    widget.state.addListener(_refresh);
+  }
+
+  @override
+  void dispose() {
+    widget.state.removeListener(_refresh);
+    super.dispose();
+  }
+
+  void _refresh() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Mes exercices'),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 100),
+        children: [
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Bibliothèque personnalisée',
+                    style: TextStyle(
+                      fontSize: 19,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Ajoute tes exercices dans leur catégorie. '
+                    'Ils seront ensuite disponibles dans tes séances.',
+                    style: TextStyle(color: Colors.grey.shade400),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 14),
+          ...exerciseCategories.map((category) {
+            final items = widget.state.customExercises
+                .where((item) => item.category == category)
+                .toList();
+
+            return Card(
+              margin: const EdgeInsets.only(bottom: 12),
+              child: Column(
+                children: [
+                  ListTile(
+                    leading: CircleAvatar(
+                      child: Icon(exerciseCategoryIcon(category)),
+                    ),
+                    title: Text(
+                      category,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    subtitle: Text(
+                      items.isEmpty
+                          ? 'Aucun exercice personnalisé'
+                          : '${items.length} exercice${items.length > 1 ? 's' : ''}',
+                    ),
+                    trailing: IconButton(
+                      tooltip: 'Ajouter',
+                      icon: const Icon(Icons.add),
+                      onPressed: () => addCustomExerciseDialog(
+                        context,
+                        widget.state,
+                        category,
+                      ),
+                    ),
+                  ),
+                  ...items.map(
+                    (exercise) => ListTile(
+                      contentPadding:
+                          const EdgeInsets.only(left: 24, right: 12),
+                      title: Text(exercise.name),
+                      subtitle: Text(
+                        '${exercise.defaultSets} séries par défaut',
+                      ),
+                      trailing: IconButton(
+                        tooltip: 'Supprimer',
+                        icon: const Icon(Icons.delete_outline),
+                        onPressed: () => confirmDeleteCustomExercise(
+                          context,
+                          widget.state,
+                          exercise,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => showCategoryPickerForNewExercise(
+          context,
+          widget.state,
+        ),
+        icon: const Icon(Icons.add),
+        label: const Text('Ajouter un exercice'),
+      ),
+    );
+  }
+}
+
+Future<void> showCategoryPickerForNewExercise(
+  BuildContext context,
+  AppState state,
+) async {
+  final category = await showDialog<String>(
+    context: context,
+    builder: (context) => SimpleDialog(
+      title: const Text('Choisir une catégorie'),
+      children: exerciseCategories.map(
+        (category) => SimpleDialogOption(
+          onPressed: () => Navigator.pop(context, category),
+          child: Row(
+            children: [
+              Icon(exerciseCategoryIcon(category)),
+              const SizedBox(width: 12),
+              Text(category),
+            ],
+          ),
+        ),
+      ).toList(),
+    ),
+  );
+
+  if (category != null && context.mounted) {
+    await addCustomExerciseDialog(context, state, category);
+  }
+}
+
+Future<void> addCustomExerciseDialog(
+  BuildContext context,
+  AppState state,
+  String category,
+) async {
+  final nameController = TextEditingController();
+  int selectedSets = 3;
+
+  final result = await showDialog<bool>(
+    context: context,
+    builder: (context) => StatefulBuilder(
+      builder: (context, setDialogState) => AlertDialog(
+        title: Text('Ajouter — $category'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameController,
+                autofocus: true,
+                textCapitalization: TextCapitalization.sentences,
+                decoration: const InputDecoration(
+                  labelText: 'Nom de l’exercice',
+                  hintText: 'Ex. Écarté poulie',
+                ),
+              ),
+              const SizedBox(height: 16),
+              DropdownButtonFormField<int>(
+                initialValue: selectedSets,
+                decoration: const InputDecoration(
+                  labelText: 'Séries par défaut',
+                ),
+                items: List.generate(6, (i) => i + 1)
+                    .map(
+                      (value) => DropdownMenuItem<int>(
+                        value: value,
+                        child: Text('$value'),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (value) {
+                  if (value != null) {
+                    setDialogState(() => selectedSets = value);
+                  }
+                },
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Annuler'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (nameController.text.trim().isNotEmpty) {
+                Navigator.pop(context, true);
+              }
+            },
+            child: const Text('Ajouter'),
+          ),
+        ],
+      ),
+    ),
+  );
+
+  final name = nameController.text.trim();
+  nameController.dispose();
+
+  if (result != true || name.isEmpty) return;
+
+  final exists = state.customExercises.any(
+    (exercise) =>
+        exercise.category == category &&
+        exercise.name.toLowerCase() == name.toLowerCase(),
+  );
+
+  if (exists) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Cet exercice existe déjà dans cette catégorie.',
+          ),
+        ),
+      );
+    }
+    return;
+  }
+
+  await state.addCustomExercise(
+    name: name,
+    category: category,
+    defaultSets: selectedSets,
+  );
+}
+
+Future<void> confirmDeleteCustomExercise(
+  BuildContext context,
+  AppState state,
+  CustomExercise exercise,
+) async {
+  final confirm = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Supprimer cet exercice ?'),
+      content: Text(
+        '« ${exercise.name} » sera retiré de ta bibliothèque. '
+        'Les séances déjà enregistrées resteront intactes.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Annuler'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text('Supprimer'),
+        ),
+      ],
+    ),
+  );
+
+  if (confirm == true) {
+    await state.deleteCustomExercise(exercise.id);
+  }
+}
+
+// ============================================================
 // CHOIX SEANCE
 // ============================================================
 
@@ -1249,13 +1725,29 @@ class WorkoutSelectionPage
   @override
   Widget build(BuildContext context) {
     final workouts =
-        defaultWorkouts();
+        state.workoutsWithCustomExercises();
 
     return Scaffold(
       appBar: AppBar(
         title: const Text(
           'Choisir une séance',
         ),
+        actions: [
+          IconButton(
+            tooltip: 'Mes exercices',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => ExerciseLibraryPage(
+                    state: state,
+                  ),
+                ),
+              );
+            },
+            icon: const Icon(Icons.library_add_outlined),
+          ),
+        ],
       ),
       body:
           ListView.builder(
@@ -3375,7 +3867,7 @@ class SettingsPage
 
         Center(
           child: Text(
-            'Suivi Salle • V5 iPhone',
+            'Suivi Salle • V7',
             style:
                 TextStyle(
               color:
